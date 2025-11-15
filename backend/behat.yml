@@ -1,0 +1,11 @@
+default:
+    suites:
+        default:
+            contexts:
+                - FeatureContext
+    extensions:
+        FriendsOfBehat\SymfonyExtension:
+            bootstrap: tests/bootstrap.php
+            kernel:
+                class: App\Kernel
+                path: src/Kernel.php
