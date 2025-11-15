@@ -1,0 +1,146 @@
+services:
+  # Traefik Reverse Proxy
+  traefik:
+    image: traefik:v2.10
+    container_name: symfony_vue_traefik
+    command:
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.email=admin@example.com"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.tlschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_certs:/letsencrypt
+    networks:
+      - symfony_vue_network
+
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: symfony_vue_mysql_prod
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - symfony_vue_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Symfony Backend
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../docker/prod/Dockerfile.backend
+    container_name: symfony_vue_backend_prod
+    environment:
+      DATABASE_URL: "mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}?serverVersion=8.0"
+      APP_ENV: prod
+      APP_DEBUG: 0
+      SENTRY_DSN: ${SENTRY_DSN}
+    networks:
+      - symfony_vue_network
+    depends_on:
+      mysql:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`api.${DOMAIN}`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+      # HTTP to HTTPS redirect
+      - "traefik.http.routers.backend-http.rule=Host(`api.${DOMAIN}`)"
+      - "traefik.http.routers.backend-http.entrypoints=web"
+      - "traefik.http.routers.backend-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+
+  # Vue Frontend
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../docker/prod/Dockerfile.frontend
+      args:
+        VITE_API_URL: https://api.${DOMAIN}
+    container_name: symfony_vue_frontend_prod
+    networks:
+      - symfony_vue_network
+    depends_on:
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`${DOMAIN}`,`www.${DOMAIN}`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
+      # HTTP to HTTPS redirect
+      - "traefik.http.routers.frontend-http.rule=Host(`${DOMAIN}`,`www.${DOMAIN}`)"
+      - "traefik.http.routers.frontend-http.entrypoints=web"
+      - "traefik.http.routers.frontend-http.middlewares=redirect-to-https"
+
+  # Sentry Self-Hosted
+  sentry:
+    image: sentry:latest
+    container_name: symfony_vue_sentry_prod
+    environment:
+      SENTRY_SECRET_KEY: ${SENTRY_SECRET_KEY}
+      SENTRY_POSTGRES_HOST: sentry_postgres
+      SENTRY_DB_USER: sentry
+      SENTRY_DB_PASSWORD: ${SENTRY_DB_PASSWORD}
+      SENTRY_REDIS_HOST: sentry_redis
+    networks:
+      - symfony_vue_network
+    depends_on:
+      - sentry_redis
+      - sentry_postgres
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.sentry.rule=Host(`sentry.${DOMAIN}`)"
+      - "traefik.http.routers.sentry.entrypoints=websecure"
+      - "traefik.http.routers.sentry.tls.certresolver=letsencrypt"
+      - "traefik.http.services.sentry.loadbalancer.server.port=9000"
+
+  # Redis for Sentry
+  sentry_redis:
+    image: redis:7-alpine
+    container_name: symfony_vue_sentry_redis_prod
+    networks:
+      - symfony_vue_network
+
+  # PostgreSQL for Sentry
+  sentry_postgres:
+    image: postgres:15-alpine
+    container_name: symfony_vue_sentry_postgres_prod
+    environment:
+      POSTGRES_USER: sentry
+      POSTGRES_PASSWORD: ${SENTRY_DB_PASSWORD}
+      POSTGRES_DB: sentry
+    volumes:
+      - sentry_postgres_data:/var/lib/postgresql/data
+    networks:
+      - symfony_vue_network
+
+volumes:
+  mysql_data:
+  sentry_postgres_data:
+  traefik_certs:
+
+networks:
+  symfony_vue_network:
+    driver: bridge

@@ -1,0 +1,108 @@
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: symfony_vue_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: symfony_app
+      MYSQL_USER: symfony
+      MYSQL_PASSWORD: symfony
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - symfony_vue_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Symfony Backend
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../docker/dev/Dockerfile.backend
+    container_name: symfony_vue_backend
+    environment:
+      DATABASE_URL: "mysql://symfony:symfony@mysql:3306/symfony_app?serverVersion=8.0"
+      APP_ENV: dev
+      APP_DEBUG: 1
+      SENTRY_DSN: "http://sentry-key@sentry:9000/1"
+    volumes:
+      - ../backend:/var/www/html
+    ports:
+      - "8000:8000"
+    networks:
+      - symfony_vue_network
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command: symfony server:start --no-tls --port=8000
+
+  # Vue Frontend
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../docker/dev/Dockerfile.frontend
+    container_name: symfony_vue_frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+    volumes:
+      - ../frontend:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    networks:
+      - symfony_vue_network
+    depends_on:
+      - backend
+    command: npm run dev
+
+  # Sentry Self-Hosted
+  sentry:
+    image: sentry:latest
+    container_name: symfony_vue_sentry
+    environment:
+      SENTRY_SECRET_KEY: changeme
+      SENTRY_POSTGRES_HOST: sentry_postgres
+      SENTRY_DB_USER: sentry
+      SENTRY_DB_PASSWORD: sentry
+      SENTRY_REDIS_HOST: sentry_redis
+    ports:
+      - "9000:9000"
+    networks:
+      - symfony_vue_network
+    depends_on:
+      - sentry_redis
+      - sentry_postgres
+
+  # Redis for Sentry
+  sentry_redis:
+    image: redis:7-alpine
+    container_name: symfony_vue_sentry_redis
+    networks:
+      - symfony_vue_network
+
+  # PostgreSQL for Sentry
+  sentry_postgres:
+    image: postgres:15-alpine
+    container_name: symfony_vue_sentry_postgres
+    environment:
+      POSTGRES_USER: sentry
+      POSTGRES_PASSWORD: sentry
+      POSTGRES_DB: sentry
+    volumes:
+      - sentry_postgres_data:/var/lib/postgresql/data
+    networks:
+      - symfony_vue_network
+
+volumes:
+  mysql_data:
+  sentry_postgres_data:
+
+networks:
+  symfony_vue_network:
+    driver: bridge
